@@ -9,6 +9,7 @@
         target framework and match it to the one this application targets.
         -->
         <TargetFramework>net10.0-windows</TargetFramework>
+        <TargetFramework>net9.0-windows</TargetFramework>
 
         <OutputType>WinExe</OutputType>
         <Nullable>enable</Nullable>
