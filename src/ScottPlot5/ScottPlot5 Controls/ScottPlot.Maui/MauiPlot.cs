@@ -1,3 +1,6 @@
+using ScottPlot.Interactivity;
+using ScottPlot.Maui.TouchInteraction;
+using SkiaSharp;
 using SkiaSharp.Views.Maui;
 using SkiaSharp.Views.Maui.Controls;
 
@@ -5,63 +8,111 @@ namespace ScottPlot.Maui;
 
 public class MauiPlot : SKCanvasView, IPlotControl
 {
-    public Plot Plot { get; internal set; } = new();
+    public Plot Plot { get; internal set; }
     public IMultiplot Multiplot { get; set; }
-    public SkiaSharp.GRContext? GRContext => null;
+    public GRContext? GRContext => null;
     public IPlotMenu? Menu { get; set; }
-    public Interactivity.UserInputProcessor UserInputProcessor { get; }
-    public float DisplayScale { get; set; } = 1;
-    internal Pixel LastPixel { get; set; }
-    internal Pixel LastScalePixel { get; set; }
+    public UserInputProcessor UserInputProcessor { get; }
+    public float DisplayScale { get; set; }
+
+    public bool UseIndependentAxisScaling
+    {
+        get => _touchInteractionStateMachine.UseIndependentAxisScaling;
+        set => _touchInteractionStateMachine.UseIndependentAxisScaling = value;
+    }
+
+    private readonly TouchInteractionStateMachine _touchInteractionStateMachine = new();
+
     public MauiPlot()
     {
         Plot = new Plot() { PlotControl = this };
         Multiplot = new Multiplot(Plot);
         DisplayScale = DetectDisplayScale();
-        UserInputProcessor = new(this);
+        UserInputProcessor = new UserInputProcessor(this);
         Menu = new MauiPlotMenu(this);
 
         IgnorePixelScaling = true;
-
-        if (DeviceInfo.Idiom == DeviceIdiom.Desktop)
-        {
-            Touch += MauiPlot_Touch;
-            EnableTouchEvents = true;
-        }
-        else
-        {
-            EnableTouchEvents = false;
-            var panGestureRecognizer = new PanGestureRecognizer();
-            var pinchGestureRecognizer = new PinchGestureRecognizer();
-            var tapGestureRecognizer = new TapGestureRecognizer() { NumberOfTapsRequired = 2 };
-
-            panGestureRecognizer.PanUpdated += (s, e) => UserInputProcessor.ProcessPanUpdated(this, e);
-            pinchGestureRecognizer.PinchUpdated += (s, e) => UserInputProcessor.ProcessPinchUpdated(this, e, (float)Width, (float)Height);
-            tapGestureRecognizer.Tapped += (s, e) => UserInputProcessor.ProcessZoomAll(this, e);
-
-            GestureRecognizers.Add(pinchGestureRecognizer);
-            GestureRecognizers.Add(panGestureRecognizer);
-            GestureRecognizers.Add(tapGestureRecognizer);
-        }
+        EnableTouchEvents = true;
+        Touch += MauiPlot_Touch;
     }
 
     private void MauiPlot_Touch(object? sender, SKTouchEventArgs e)
     {
+        TouchEventResult result;
+
         switch (e.ActionType)
         {
             case SKTouchAction.Pressed:
-                UserInputProcessor.ProcessMouseDown(this, e);
+                result = _touchInteractionStateMachine.ProcessTouchPressed(e.Id, e.Location);
+                HandleTouchResult(result, e);
                 break;
+
             case SKTouchAction.Moved:
-                UserInputProcessor.ProcessMouseMove(this, e);
+                result = _touchInteractionStateMachine.ProcessTouchMoved(e.Id, e.Location);
+                HandleTouchResult(result, e);
                 break;
+
             case SKTouchAction.Released:
-                UserInputProcessor.ProcessMouseUp(this, e);
+            case SKTouchAction.Cancelled:
+                result = _touchInteractionStateMachine.ProcessTouchReleased(e.Id);
+                HandleTouchResult(result, e);
                 break;
+
             case SKTouchAction.WheelChanged:
                 UserInputProcessor.ProcessWheelChanged(this, e);
                 break;
-            default: break;
+
+            case SKTouchAction.Entered:
+            case SKTouchAction.Exited:
+            default:
+                break;
+        }
+
+        e.Handled = true;
+    }
+
+    private void HandleTouchResult(TouchEventResult result, SKTouchEventArgs e)
+    {
+        switch (result.Action)
+        {
+            case TouchAction.DoubleTap:
+                Plot.Axes.AutoScale();
+                Refresh();
+                break;
+
+            case TouchAction.StartPan:
+                if (result.Location.HasValue)
+                {
+                    UserInputProcessor.ProcessTouchDown(this, e);
+                }
+                break;
+
+            case TouchAction.Pan:
+                if (result.Location.HasValue)
+                {
+                    UserInputProcessor.ProcessTouchMove(this, e);
+                }
+                break;
+
+            case TouchAction.EndPan:
+                UserInputProcessor.ProcessTouchUp(this, e);
+                break;
+
+            case TouchAction.Pinch:
+                if (result.Pinch.HasValue)
+                {
+                    var pinch = result.Pinch.Value;
+                    var centerPixel = new Pixel(pinch.Center.X, pinch.Center.Y);
+                    MouseAxisManipulation.MouseWheelZoom(Plot, pinch.ScaleX, pinch.ScaleY, centerPixel, false);
+                    Refresh();
+                }
+                break;
+
+            case TouchAction.StartPinch:
+            case TouchAction.EndPinch:
+            case TouchAction.None:
+            default:
+                break;
         }
     }
 
@@ -75,6 +126,7 @@ public class MauiPlot : SKCanvasView, IPlotControl
         Plot = plot;
         Plot.PlotControl = this;
         Multiplot.Reset(plot);
+        _touchInteractionStateMachine.Reset();
     }
 
     public void Refresh()
